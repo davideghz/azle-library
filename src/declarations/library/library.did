@@ -1,0 +1,8 @@
+service: () -> {
+    addBook: (record {title:text; availableCopies:nat; isbn:text; author:text; summary:text; genre:text; publicationYear:nat}) -> ();
+    checkoutBook: (nat) -> (bool);
+    getBook: (nat) -> (opt record {title:text; availableCopies:nat; isbn:text; author:text; summary:text; genre:text; publicationYear:nat}) query;
+    getBorrowRecords: (bool) -> (vec record {userId:principal; bookId:nat; returnDate:nat; checkoutDate:nat}) query;
+    returnBorrowed: (nat) -> (bool);
+    searchBooks: (record {title:text; publicationYearFrom:nat; isbn:text; author:text; genre:text; minAvailableCopies:nat; publicationYearTo:nat}) -> (vec record {title:text; availableCopies:nat; isbn:text; author:text; summary:text; genre:text; publicationYear:nat}) query;
+}
