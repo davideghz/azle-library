@@ -29,47 +29,78 @@ const BorrowRecord = Record({
 
 let books = StableBTreeMap<nat, typeof Book>(0);
 let borrowedRecords = StableBTreeMap<nat, typeof BorrowRecord>(1);
-
 export default Canister({
     searchBooks: query([SearchFilters], Vec(Book), (filters) => {
-        const filteredBooks = books.values().filter((el: typeof Book) => {
-            return el.title.toString().toLowerCase().includes(filters.title.toLowerCase()) &&
-                el.author.toString().toLowerCase().includes(filters.author.toLowerCase()) &&
-                (el.isbn.toString() === filters.isbn || filters.isbn === "") &&
-                BigInt(el.publicationYear.toString()) >= filters.publicationYearFrom &&
-                BigInt(el.publicationYear.toString()) <= filters.publicationYearTo &&
-                (el.genre.toString() === filters.genre || filters.genre === "") &&
-                BigInt(el.availableCopies.toString()) >= filters.minAvailableCopies;
-        }).map(book => {
-            return {
-                title: book.title.toString(),
-                author: book.author.toString(),
-                isbn: book.isbn.toString(),
-                publicationYear: BigInt(book.publicationYear.toString()),
-                genre: book.genre.toString(),
-                summary: book.summary.toString(),
-                availableCopies: BigInt(book.availableCopies.toString())
-            };
-        });
+        // Validate input data
+        if (!isValidSearchFilters(filters)) {
+            // Handle invalid input gracefully or throw an error
+            return [];
+        }
+
+        // Filter books based on search criteria
+        const filteredBooks = books.values().filter((book: typeof Book) => {
+            const lowercaseTitle = book.title.toString().toLowerCase();
+            const lowercaseAuthor = book.author.toString().toLowerCase();
+
+            return lowercaseTitle.includes(filters.title.toLowerCase()) &&
+                lowercaseAuthor.includes(filters.author.toLowerCase()) &&
+                (book.isbn.toString() === filters.isbn || filters.isbn === "") &&
+                BigInt(book.publicationYear.toString()) >= filters.publicationYearFrom &&
+                BigInt(book.publicationYear.toString()) <= filters.publicationYearTo &&
+                (book.genre.toString() === filters.genre || filters.genre === "") &&
+                BigInt(book.availableCopies.toString()) >= filters.minAvailableCopies;
+        }).map(book => ({
+            title: book.title.toString(),
+            author: book.author.toString(),
+            isbn: book.isbn.toString(),
+            publicationYear: BigInt(book.publicationYear.toString()),
+            genre: book.genre.toString(),
+            summary: book.summary.toString(),
+            availableCopies: BigInt(book.availableCopies.toString())
+        }));
+
+        // Limit the number of results to prevent potential abuse
+        const limitedResults = filteredBooks.slice(0, MAX_RESULTS);
+        return limitedResults;
+    }),
+
         return filteredBooks;
     }),
+    export default Canister({
     checkoutBook: update([nat], bool, (bookId) => {
+        // Validate bookId input
+        if (!isValidBookId(bookId)) {
+            // Handle invalid input gracefully or throw an error
+            return false;
+        }
+
+        // Check for potential reentrancy issues
+        if (isReentrantCall()) {
+            // Handle reentrancy gracefully or throw an error
+            return false;
+        }
+
         const book = books.get(bookId);
-        if ('None' in book) {
+
+        // Check if the book exists and has available copies
+        if ('None' in book || BigInt(book.Some.availableCopies.toString()) === BigInt(0)) {
+            // Handle unavailable book gracefully or throw an error
             return false;
         }
-        const bookSome = book.Some;
-        if (BigInt(bookSome.availableCopies.toString()) === BigInt(0)) {
-            return false;
-        }
-        const previousRecords = borrowedRecords.values().filter((el) => {
-            return el.userId.toString() === ic.caller().toString() &&
-                BigInt(el.bookId.toString()) === bookId &&
-                BigInt(el.returnDate.toString()) == BigInt(0);
+
+        // Check for previous borrowing records by the user
+        const previousRecords = borrowedRecords.values().filter((record) => {
+            return record.userId.toString() === ic.caller().toString() &&
+                BigInt(record.bookId.toString()) === bookId &&
+                BigInt(record.returnDate.toString()) === BigInt(0);
         });
+
         if (previousRecords.length > 0) {
+            // Handle existing borrow record gracefully or throw an error
             return false;
         }
+
+        // Proceed with checkout
         const nextKey = borrowedRecords.len();
         const newRecord = {
             userId: ic.caller(),
@@ -77,15 +108,25 @@ export default Canister({
             checkoutDate: ic.time(),
             returnDate: BigInt(0),
         };
-        const newBook = {
-            title: bookSome.title.toString(),
-            author: bookSome.author.toString(),
-            isbn: bookSome.isbn.toString(),
-            publicationYear: BigInt(bookSome.publicationYear.toString()),
-            genre: bookSome.genre.toString(),
-            summary: bookSome.summary.toString(),
-            availableCopies: BigInt(bookSome.availableCopies.toString()) - BigInt(1),
+
+        const updatedBook = {
+            title: book.Some.title.toString(),
+            author: book.Some.author.toString(),
+            isbn: book.Some.isbn.toString(),
+            publicationYear: BigInt(book.Some.publicationYear.toString()),
+            genre: book.Some.genre.toString(),
+            summary: book.Some.summary.toString(),
+            availableCopies: BigInt(book.Some.availableCopies.toString()) - BigInt(1),
         };
+
+        // Insert new borrowing record and update book information
+        borrowedRecords.insert(nextKey, newRecord);
+        books.insert(bookId, updatedBook);
+
+        return true;
+    }),
+});
+
         borrowedRecords.insert(
             nextKey,
             // @ts-ignore
@@ -96,24 +137,51 @@ export default Canister({
         return true;
     }),
     //@ts-ignore
+    export default Canister({
     getBorrowRecords: query([bool, bool], Vec(BorrowRecord), (activeOnly, allUsers) => {
-        return borrowedRecords.values().filter((el) => {
-            return (allUsers || el.userId.toString() === ic.caller().toString()) &&
-                (!activeOnly || BigInt(el.returnDate.toString()) == BigInt(0));
-        }).map((el) => {
-            return {
-                userId: el.userId,
-                bookId: BigInt(el.bookId.toString()),
-                checkoutDate: BigInt(el.checkoutDate.toString()),
-                returnDate: BigInt(el.returnDate.toString()),
-            }
+        // Validate input data
+        if (typeof activeOnly !== 'boolean' || typeof allUsers !== 'boolean') {
+            // Handle invalid input gracefully or throw an error
+            return [];
+        }
+
+        // Ensure proper authentication and authorization
+        if (!isValidCaller()) {
+            // Handle unauthorized access gracefully or throw an error
+            return [];
+        }
+
+        // Filter borrowing records based on criteria
+        const records = borrowedRecords.values().filter((record) => {
+            return (allUsers || record.userId.toString() === ic.caller().toString()) &&
+                (!activeOnly || BigInt(record.returnDate.toString()) === BigInt(0));
+        }).map((record) => ({
+            userId: record.userId,
+            bookId: BigInt(record.bookId.toString()),
+            checkoutDate: BigInt(record.checkoutDate.toString()),
+            returnDate: BigInt(record.returnDate.toString()),
+        }));
+
+        return records;
+    }),
+    // ... other functions
+});
+
         });
     }),
+    export default Canister({
     addBook: update([Book], Void, (book) => {
+        // Validate book details
+        if (!isValidBookDetails(book) || isDuplicateBook(book)) {
+            // Handle invalid input or duplicate book gracefully or throw an error
+            return;
+        }
+
+        // Proceed with adding the book to the library
         const nextKey = books.len();
-        // @ts-ignore
         books.insert(nextKey, book);
     }),
+    
     // @ts-ignore
     getBook: query([nat], Opt(Book), (bookId) => {
         return books.get(bookId);
